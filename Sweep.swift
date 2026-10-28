@@ -55,7 +55,7 @@ private func knownTargets() -> [Target] {
         Target(id: "derived", name: "Xcode DerivedData", note: "Build output. Xcode rebuilds it on the next build.",
                paths: [at("Library/Developer/Xcode/DerivedData")], safety: .safe, action: .emptyFolders),
         Target(id: "simunavail", name: "Old simulators", note: "Simulators for runtimes that are no longer installed.",
-               paths: [at("Library/Developer/CoreSimulator/Devices")], safety: .safe,
+               paths: unavailableSimulators(), safety: .safe,
                action: .command("xcrun simctl delete unavailable")),
         Target(id: "simcache", name: "Simulator caches", note: "Rebuilt automatically.",
                paths: [at("Library/Developer/CoreSimulator/Caches")], safety: .safe, action: .emptyFolders),
@@ -91,6 +91,15 @@ private func knownTargets() -> [Target] {
         Target(id: "downloads", name: "Downloads", note: "Your files. Sort them yourself.",
                paths: [at("Downloads")], safety: .keep, action: .reveal),
     ]
+}
+
+/// Device folders of simulators whose runtime is gone, which is all `simctl delete unavailable` removes.
+private func unavailableSimulators() -> [URL] {
+    let json = run("/usr/bin/xcrun", ["simctl", "list", "devices", "unavailable", "-j"])
+    guard let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+          let byRuntime = root["devices"] as? [String: [[String: Any]]] else { return [] }
+    return byRuntime.values.flatMap { $0 }.compactMap { $0["udid"] as? String }
+        .map { at("Library/Developer/CoreSimulator/Devices/\($0)") }
 }
 
 /// Folders where project build output (node_modules, Rust target/) gets found.
