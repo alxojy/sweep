@@ -75,8 +75,8 @@ private func knownTargets() -> [Target] {
                paths: [at(".cargo/registry/cache"), at(".cargo/registry/src")], safety: .safe, action: .emptyFolders),
         Target(id: "brew", name: "Homebrew downloads", note: "Old bottles and downloads.",
                paths: [at("Library/Caches/Homebrew")], safety: .safe, action: .command("brew cleanup -s --prune=all")),
-        Target(id: "pnpm", name: "pnpm store", note: "Removes packages no project links to any more.",
-               paths: [at("Library/pnpm/store")], safety: .safe, action: .command("pnpm store prune")),
+        Target(id: "pnpm", name: "pnpm store", note: "Existing node_modules keep working; the next install downloads packages again.",
+               paths: [at("Library/pnpm/store")], safety: .safe, action: .emptyFolders),
         Target(id: "simerase", name: "Simulator data", note: "Wipes apps and data from every simulator; the devices stay.",
                paths: [at("Library/Developer/CoreSimulator/Devices")], safety: .review,
                action: .command("xcrun simctl shutdown all; xcrun simctl erase all")),
@@ -129,6 +129,22 @@ private func run(_ exe: String, _ args: [String]) -> String {
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
     return String(decoding: data, as: UTF8.self)
+}
+
+/// Runs a command through a login shell, so PATH has brew, go, npm and the rest. Returns the error if it fails.
+private func shell(_ cmd: String) -> String? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    p.arguments = ["-lc", cmd]
+    let pipe = Pipe()
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = pipe
+    do { try p.run() } catch { return error.localizedDescription }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard p.terminationStatus != 0 else { return nil }
+    let lastLine = String(decoding: data, as: UTF8.self).split(separator: "\n").last.map(String.init)
+    return lastLine ?? "exit code \(p.terminationStatus)"
 }
 
 private func freeBytes() -> Int64 {
@@ -224,19 +240,21 @@ final class Store: ObservableObject {
         busy.insert(t.id)
         let before = freeBytes()
         Task.detached(priority: .userInitiated) {
-            Self.perform(t)
+            let error = Self.perform(t)
             let size = diskUsage(t.paths)
             let after = freeBytes()
             await MainActor.run {
                 self.busy.remove(t.id)
                 self.setSize(t.id, size)
                 self.free = after
-                self.lastMessage = "\(t.name): freed \(fmt(max(0, after - before)))"
+                self.lastMessage = error.map { "\(t.name) failed: \($0)" }
+                    ?? "\(t.name): freed \(fmt(max(0, after - before)))"
             }
         }
     }
 
-    nonisolated private static func perform(_ t: Target) {
+    /// Returns an error message if the clean failed.
+    nonisolated private static func perform(_ t: Target) -> String? {
         let fm = FileManager.default
         switch t.action {
         case .emptyFolders:
@@ -248,10 +266,11 @@ final class Store: ObservableObject {
         case .deleteFolders:
             t.paths.forEach(removeForcefully)
         case .command(let cmd):
-            run("/bin/zsh", ["-lc", cmd])
+            return shell(cmd)
         case .reveal:
             break
         }
+        return nil
     }
 
     /// Go's module cache is read-only, so fall back to `rm -rf` after making it writable.
