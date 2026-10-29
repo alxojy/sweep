@@ -43,7 +43,11 @@ struct Target: Identifiable {
     let paths: [URL]
     let safety: Safety
     let action: Action
+    /// Measures the size when `du` on the paths can't, e.g. for disk images macOS keeps out of reach.
+    var measure: (@Sendable () -> Int64)? = nil
     var bytes: Int64?
+
+    func currentSize() -> Int64 { measure?() ?? diskUsage(paths) }
 }
 
 private let home = FileManager.default.homeDirectoryForCurrentUser
@@ -80,6 +84,10 @@ private func knownTargets() -> [Target] {
         Target(id: "simdelete", name: "Simulators", note: "Deletes every simulator and its data. Add new ones in Xcode when you need them.",
                paths: [at("Library/Developer/CoreSimulator/Devices")], safety: .review,
                action: .command("xcrun simctl shutdown all; xcrun simctl delete all")),
+        Target(id: "simruntimes", name: "Simulator runtimes", note: "The iOS versions simulators run on. Xcode downloads them again when you need one.",
+               paths: simulatorRuntimes().map(\.path), safety: .review,
+               action: .command("xcrun simctl runtime delete all"),
+               measure: { simulatorRuntimes().reduce(0) { $0 + $1.bytes } }),
         Target(id: "trash", name: "Trash", note: "Gone for good once emptied.",
                paths: [at(".Trash")], safety: .review, action: .emptyFolders),
         Target(id: "rustup", name: "Rust toolchains", note: "Remove toolchains you don't use with `rustup toolchain uninstall`.",
@@ -100,6 +108,16 @@ private func unavailableSimulators() -> [URL] {
           let byRuntime = root["devices"] as? [String: [[String: Any]]] else { return [] }
     return byRuntime.values.flatMap { $0 }.compactMap { $0["udid"] as? String }
         .map { at("Library/Developer/CoreSimulator/Devices/\($0)") }
+}
+
+/// Simulator runtime disk images. They live under /System/Library/AssetsV2, which `du` can't read, so simctl reports the size.
+private func simulatorRuntimes() -> [(path: URL, bytes: Int64)] {
+    let json = run("/usr/bin/xcrun", ["simctl", "runtime", "list", "-j"])
+    guard let root = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: Any]] else { return [] }
+    return root.values.filter { $0["state"] as? String != "Deleting" }.compactMap { r in
+        guard let path = r["path"] as? String else { return nil }
+        return (URL(fileURLWithPath: path), (r["sizeBytes"] as? NSNumber)?.int64Value ?? 0)
+    }
 }
 
 /// Folders where project build output (node_modules, Rust target/) gets found.
@@ -214,13 +232,13 @@ final class Store: ObservableObject {
         Task.detached(priority: .utility) {
             let base = knownTargets()
             for t in base {
-                let size = diskUsage(t.paths)
+                let size = t.currentSize()
                 await MainActor.run { self.setSize(t.id, size) }
             }
             let found = findProjectBuildFolders()
             await MainActor.run { self.projects = found }
             for t in found {
-                let size = diskUsage(t.paths)
+                let size = t.currentSize()
                 await MainActor.run { self.setSize(t.id, size) }
             }
             await MainActor.run {
@@ -241,7 +259,7 @@ final class Store: ObservableObject {
         let before = freeBytes()
         Task.detached(priority: .userInitiated) {
             let error = Self.perform(t)
-            let size = diskUsage(t.paths)
+            let size = t.currentSize()
             let after = freeBytes()
             await MainActor.run {
                 self.busy.remove(t.id)
