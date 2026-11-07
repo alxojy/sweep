@@ -81,6 +81,15 @@ private func knownTargets() -> [Target] {
                paths: [at("Library/Caches/Homebrew")], safety: .safe, action: .command("brew cleanup -s --prune=all")),
         Target(id: "pnpm", name: "pnpm store", note: "Existing node_modules keep working; the next install downloads packages again.",
                paths: [at("Library/pnpm/store")], safety: .safe, action: .emptyFolders),
+        Target(id: "gradle", name: "Gradle caches", note: "Dependencies and build caches. Downloaded again on the next build.",
+               paths: [at(".gradle/caches")], safety: .safe, action: .emptyFolders),
+        Target(id: "uv", name: "uv cache", note: "Python packages are downloaded again when needed.",
+               paths: [at(".cache/uv")], safety: .safe, action: .command("uv cache clean")),
+        Target(id: "nix", name: "Unused Nix store paths", note: "Store paths nothing refers to. Old profile generations are kept.",
+               paths: [URL(fileURLWithPath: "/nix/store")], safety: .safe, action: .command("nix-collect-garbage"),
+               measure: { nixGarbageBytes() }),
+        Target(id: "claudetmp", name: "Old Claude Code temp files", note: "Scratch folders from sessions untouched for a day.",
+               paths: staleClaudeSessions(), safety: .review, action: .deleteFolders),
         Target(id: "simdelete", name: "Simulators", note: "Deletes every simulator and its data. Add new ones in Xcode when you need them.",
                paths: [at("Library/Developer/CoreSimulator/Devices")], safety: .review,
                action: .command("xcrun simctl shutdown all; xcrun simctl delete all")),
@@ -117,6 +126,28 @@ private func simulatorRuntimes() -> [(path: URL, bytes: Int64)] {
     return root.values.filter { $0["state"] as? String != "Deleting" }.compactMap { r in
         guard let path = r["path"] as? String else { return nil }
         return (URL(fileURLWithPath: path), (r["sizeBytes"] as? NSNumber)?.int64Value ?? 0)
+    }
+}
+
+/// Bytes `nix-collect-garbage` would free: the store paths no GC root reaches.
+private func nixGarbageBytes() -> Int64 {
+    let out = run("/bin/zsh", ["-lc", "nix-store --gc --print-dead 2>/dev/null | xargs du -sk 2>/dev/null"])
+    return out.split(separator: "\n").reduce(0) { sum, line in
+        sum + (Int64(line.split(separator: "\t").first ?? "") ?? 0) * 1024
+    }
+}
+
+/// Claude Code session scratch folders (/private/tmp/claude-<uid>/<project>/<session>) with nothing modified in a day.
+private func staleClaudeSessions() -> [URL] {
+    let base = URL(fileURLWithPath: "/private/tmp/claude-\(getuid())")
+    let fm = FileManager.default
+    let cutoff = Date().addingTimeInterval(-86_400)
+    let sessions = ((try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil)) ?? []).flatMap {
+        (try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)) ?? []
+    }
+    return sessions.filter { dir in
+        let recent = run("/usr/bin/find", [dir.path, "-newermt", "@\(Int(cutoff.timeIntervalSince1970))", "-print", "-quit"])
+        return recent.isEmpty
     }
 }
 
@@ -174,27 +205,33 @@ private func fmt(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
 }
 
-/// Finds node_modules and Rust target/ folders under the project roots, without descending into them.
+/// Finds node_modules, Rust target/ and Flutter build/ and .dart_tool folders under the project roots, without descending into them.
 private func findProjectBuildFolders() -> [Target] {
     var found: [Target] = []
     let fm = FileManager.default
     for root in projectRoots where fm.fileExists(atPath: root.path) {
+        // Hidden folders are skipped by hand rather than with .skipsHiddenFiles, so .dart_tool can still be found.
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
-                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+                                         options: [.skipsPackageDescendants]) else { continue }
         for case let url as URL in walker {
             guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
             if walker.level > 6 { walker.skipDescendants(); continue }
             let name = url.lastPathComponent
             let parent = url.deletingLastPathComponent()
+            let isFlutterProject = fm.fileExists(atPath: parent.appendingPathComponent("pubspec.yaml").path)
+            let isDart = name == ".dart_tool" && isFlutterProject
+            if name.hasPrefix(".") && !isDart { walker.skipDescendants(); continue }
             let isNode = name == "node_modules"
             let isRust = name == "target" && fm.fileExists(atPath: parent.appendingPathComponent("Cargo.toml").path)
+            let isFlutter = name == "build" && isFlutterProject
             let isDerived = name == "DerivedData"
-            guard isNode || isRust || isDerived else { continue }
+            guard isNode || isRust || isFlutter || isDart || isDerived else { continue }
             walker.skipDescendants()
             let project = parent.path.replacingOccurrences(of: home.path, with: "~")
             found.append(Target(
                 id: url.path, name: "\(name) in \(project)",
-                note: isNode ? "Reinstall with npm/yarn install." : "Rebuilt on the next build.",
+                note: isNode ? "Reinstall with npm/yarn install."
+                    : isDart ? "Restored by flutter pub get." : "Rebuilt on the next build.",
                 paths: [url], safety: .safe, action: .deleteFolders))
         }
     }
