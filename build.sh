@@ -2,8 +2,10 @@
 # Builds Sweep.app into /Applications, then restarts it so the new build is running.
 set -euo pipefail
 cd "$(dirname "$0")"
-APP=/Applications/Sweep.app
-rm -rf "$APP"
+DEST=/Applications/Sweep.app
+# Build in a temporary folder and swap the finished app in, so Finder and Spotlight never see a
+# half-built app. If they do, they cache it with a "can't open" icon.
+APP=$(mktemp -d)/Sweep.app
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 ICONSET=$(mktemp -d)/Sweep.iconset
 swift make-icon.swift "$ICONSET"
@@ -25,5 +27,8 @@ PLIST
 swiftc -O -parse-as-library -swift-version 5 Sweep.swift -o "$APP/Contents/MacOS/Sweep"
 codesign --force --sign - "$APP" >/dev/null
 pkill -x Sweep || true
-open "$APP"
-echo "Built and opened $APP"
+rm -rf "$DEST"
+mv "$APP" "$DEST"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST"
+open "$DEST"
+echo "Built and opened $DEST"
