@@ -16,14 +16,18 @@ func symbol(_ name: String, size: CGFloat) -> NSImage {
     }
 }
 
-/// Draws the icon on a 1024-point canvas, scaled to `px` pixels.
-func render(px: Int) -> Data {
-    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8,
-                               samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                               colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+/// A blank bitmap to draw into.
+func bitmap(_ px: Int) -> NSBitmapImageRep {
+    NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: px, pixelsHigh: px, bitsPerSample: 8,
+                     samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                     colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+}
+
+/// Draws the full-size 1024-pixel icon.
+func render() -> NSBitmapImageRep {
+    let rep = bitmap(1024)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    NSGraphicsContext.current!.cgContext.scaleBy(x: CGFloat(px) / 1024, y: CGFloat(px) / 1024)
 
     // macOS icon grid: an 824-point rounded square centred on the canvas, with a soft shadow.
     let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
@@ -49,10 +53,23 @@ func render(px: Int) -> Data {
     sparkles.draw(in: NSRect(x: 640 - ss.width / 2, y: 650 - ss.height / 2, width: ss.width, height: ss.height))
 
     NSGraphicsContext.restoreGraphicsState()
+    return rep
+}
+
+/// Each icon size is the full-size icon scaled down. Drawing every size from scratch instead
+/// gave blurry symbols, because AppKit reuses the bitmap it made for the first (16-pixel) size.
+let full = render()
+func png(_ px: Int) -> Data {
+    let rep = bitmap(px)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSGraphicsContext.current!.imageInterpolation = .high
+    full.draw(in: NSRect(x: 0, y: 0, width: px, height: px))
+    NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
 
 for size in [16, 32, 128, 256, 512] {
-    try! render(px: size).write(to: out.appendingPathComponent("icon_\(size)x\(size).png"))
-    try! render(px: size * 2).write(to: out.appendingPathComponent("icon_\(size)x\(size)@2x.png"))
+    try! png(size).write(to: out.appendingPathComponent("icon_\(size)x\(size).png"))
+    try! png(size * 2).write(to: out.appendingPathComponent("icon_\(size)x\(size)@2x.png"))
 }
