@@ -4,7 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP=/Applications/Sweep.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+ICONSET=$(mktemp -d)/Sweep.iconset
+swift make-icon.swift "$ICONSET"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Sweep.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -12,6 +15,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Sweep</string>
   <key>CFBundleIdentifier</key><string>local.sweep</string>
   <key>CFBundleExecutable</key><string>Sweep</string>
+  <key>CFBundleIconFile</key><string>Sweep</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
