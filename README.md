@@ -7,7 +7,9 @@ Each item is labelled **Safe**, **Check first** or **Look only**. Look-only item
 ## Build
 
 ```sh
-./build.sh && open Sweep.app
+./build.sh
 ```
+
+This installs Sweep.app into /Applications and restarts it, so it opens from Spotlight or Launchpad like any other app.
 
 Needs the Xcode command line tools and macOS 14 or later.

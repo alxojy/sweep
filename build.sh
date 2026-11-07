@@ -1,8 +1,8 @@
 #!/bin/zsh
-# Builds Sweep.app next to this script. Run it, then open Sweep.app.
+# Builds Sweep.app into /Applications, then restarts it so the new build is running.
 set -euo pipefail
 cd "$(dirname "$0")"
-APP=Sweep.app
+APP=/Applications/Sweep.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -20,4 +20,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 swiftc -O -parse-as-library -swift-version 5 Sweep.swift -o "$APP/Contents/MacOS/Sweep"
 codesign --force --sign - "$APP" >/dev/null
-echo "Built $(pwd)/$APP"
+pkill -x Sweep || true
+open "$APP"
+echo "Built and opened $APP"
